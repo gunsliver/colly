@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/gocolly/colly"
+	"github.com/gunsliver/colly"
 )
 
 const stop = true

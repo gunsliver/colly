@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/gocolly/colly"
+	"github.com/gunsliver/colly"
 )
 
 var uaGens = []func() string{
 	genFirefoxUA,
 	genChromeUA,
+	genOperaUA,
 }
 
 // RandomUserAgent generates a random browser user agent on every request
@@ -37,6 +38,10 @@ var chromeVersions = []string{
 	"37.0.2062.124",
 }
 
+var operaVersions = []string{
+	"38.0.2220.41",
+}
+
 var osStrings = []string{
 	"Macintosh; Intel Mac OS X 10_10",
 	"Windows NT 10.0",
@@ -56,4 +61,10 @@ func genChromeUA() string {
 	version := chromeVersions[rand.Intn(len(chromeVersions))]
 	os := osStrings[rand.Intn(len(osStrings))]
 	return fmt.Sprintf("Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36", os, version)
+}
+
+func genOperaUA() string {
+	version := operaVersions[rand.Intn(len(operaVersions))]
+	os := osStrings[rand.Intn(len(osStrings))]
+	return fmt.Sprintf("Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.106 Safari/537.36 OPR/%s", os, version)
 }

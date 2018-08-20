@@ -1,7 +1,7 @@
 package extensions
 
 import (
-	"github.com/gocolly/colly"
+	"github.com/gunsliver/colly"
 )
 
 // Referrer sets valid Referrer HTTP header to requests.

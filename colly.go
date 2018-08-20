@@ -47,8 +47,8 @@ import (
 	"github.com/kennygrant/sanitize"
 	"github.com/temoto/robotstxt"
 
-	"github.com/gocolly/colly/debug"
-	"github.com/gocolly/colly/storage"
+	"github.com/gunsliver/colly/debug"
+	"github.com/gunsliver/colly/storage"
 )
 
 // Collector provides the scraper instance for a scraping job
@@ -107,6 +107,7 @@ type Collector struct {
 	store             storage.Storage
 	debugger          debug.Debugger
 	robotsMap         map[string]*robotstxt.RobotsData
+	validateCallBack  *validateContainer
 	htmlCallbacks     []*htmlCallbackContainer
 	xmlCallbacks      []*xmlCallbackContainer
 	requestCallbacks  []RequestCallback
@@ -126,6 +127,9 @@ type RequestCallback func(*Request)
 // ResponseCallback is a type alias for OnResponse callback functions
 type ResponseCallback func(*Response)
 
+// ValidateCallback is a type alias for Validate callback functions
+type ValidateCallback func(*HTMLElement) bool
+
 // HTMLCallback is a type alias for OnHTML callback functions
 type HTMLCallback func(*HTMLElement)
 
@@ -140,6 +144,11 @@ type ScrapedCallback func(*Response)
 
 // ProxyFunc is a type alias for proxy setter functions.
 type ProxyFunc func(*http.Request) (*url.URL, error)
+
+type validateContainer struct {
+	Selector string
+	Function ValidateCallback
+}
 
 type htmlCallbackContainer struct {
 	Selector string
@@ -356,7 +365,7 @@ func Debugger(d debug.Debugger) func(*Collector) {
 // Init initializes the Collector's private variables and sets default
 // configuration for the Collector
 func (c *Collector) Init() {
-	c.UserAgent = "colly - https://github.com/gocolly/colly"
+	c.UserAgent = "colly - https://github.com/gunsliver/colly"
 	c.MaxDepth = 0
 	c.store = &storage.InMemoryStorage{}
 	c.store.Init()
@@ -579,21 +588,33 @@ func (c *Collector) fetch(u, method string, depth int, requestData io.Reader, ct
 	}
 
 	origURL := req.URL
-	response, err := c.backend.Cache(req, c.MaxBodySize, c.CacheDir)
-	if err := c.handleOnError(response, err, request, ctx); err != nil {
-		return err
-	}
-	if req.URL != origURL {
-		request.URL = req.URL
-		request.Headers = &req.Header
-	}
-	atomic.AddUint32(&c.responseCount, 1)
-	response.Ctx = ctx
-	response.Request = request
 
-	err = response.fixCharset(c.DetectCharset, request.ResponseCharacterEncoding)
-	if err != nil {
-		return err
+	var response *Response
+	var err error
+	validate := true
+	for {
+		skip := !validate
+		response, err = c.backend.Cache(req, c.MaxBodySize, c.CacheDir, skip)
+		if err := c.handleOnError(response, err, request, ctx); err != nil {
+			return err
+		}
+		if req.URL != origURL {
+			request.URL = req.URL
+			request.Headers = &req.Header
+		}
+		atomic.AddUint32(&c.responseCount, 1)
+		response.Ctx = ctx
+		response.Request = request
+
+		err = response.fixCharset(c.DetectCharset, request.ResponseCharacterEncoding)
+		if err != nil {
+			return err
+		}
+
+		validate = c.validateHTML(response)
+		if validate {
+			break
+		}
 	}
 
 	c.handleOnResponse(response)
@@ -713,6 +734,16 @@ func (c *Collector) Wait() {
 	c.wg.Wait()
 }
 
+// Lock the critical section to avoid variable racing
+func (c *Collector) Lock() {
+	c.lock.Lock()
+}
+
+// Unlock the critical section to release the lock
+func (c *Collector) Unlock() {
+	c.lock.Unlock()
+}
+
 // OnRequest registers a function. Function will be executed on every
 // request made by the Collector
 func (c *Collector) OnRequest(f RequestCallback) {
@@ -731,6 +762,17 @@ func (c *Collector) OnResponse(f ResponseCallback) {
 		c.responseCallbacks = make([]ResponseCallback, 0, 4)
 	}
 	c.responseCallbacks = append(c.responseCallbacks, f)
+	c.lock.Unlock()
+}
+
+func (c *Collector) OnValidate(goquerySelector string, f ValidateCallback) {
+	c.lock.Lock()
+	if c.validateCallBack == nil {
+		c.validateCallBack = &validateContainer{
+			Selector: goquerySelector,
+			Function: f,
+		}
+	}
 	c.lock.Unlock()
 }
 
@@ -913,6 +955,40 @@ func (c *Collector) handleOnResponse(r *Response) {
 	for _, f := range c.responseCallbacks {
 		f(r)
 	}
+}
+
+func (c *Collector) validateHTML(resp *Response) bool {
+	v := c.validateCallBack
+	if v == nil {
+		return true
+	}
+	if len(c.htmlCallbacks) == 0 || !strings.Contains(strings.ToLower(resp.Headers.Get("Content-Type")), "html") {
+		return true
+	}
+	doc, err := goquery.NewDocumentFromReader(bytes.NewBuffer(resp.Body))
+	if err != nil {
+		return true
+	}
+	if href, found := doc.Find("base[href]").Attr("href"); found {
+		resp.Request.baseURL, _ = url.Parse(href)
+	}
+	validate := true
+	doc.Find(v.Selector).Each(func(i int, s *goquery.Selection) {
+		for _, n := range s.Nodes {
+			e := NewHTMLElementFromSelectionNode(resp, s, n)
+			if c.debugger != nil {
+				c.debugger.Event(createEvent("html", resp.Request.ID, c.ID, map[string]string{
+					"selector": v.Selector,
+					"url":      resp.Request.URL.String(),
+				}))
+			}
+			if !v.Function(e) {
+				validate = false
+				break
+			}
+		}
+	})
+	return validate
 }
 
 func (c *Collector) handleOnHTML(resp *Response) error {
